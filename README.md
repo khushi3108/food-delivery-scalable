@@ -1,13 +1,46 @@
-# 🍔 Food Delivery App — Microservices
+# Food Delivery App — Microservices Architecture
 
-Group assignment for SEZG583 Scalable Services, BITS Pilani WILP.
+> SEZG583 Scalable Services | Group Assignment | BITS Pilani WILP
 
-## Services
+A microservices-based Food Delivery application built with Python (Flask) and deployed using Docker and Kubernetes (Minikube).
 
-| Service             | Port | Responsibility                          |
-|---------------------|------|-----------------------------------------|
-| restaurant-service  | 5001 | Manage restaurants and menu items       |
-| order-service       | 5000 | Place and track orders (calls restaurant-service) |
+---
+
+## Group Details
+
+| # | Name | BITS ID |
+|---|------|---------|
+| 1 | < Khusi Gandhi > | < 2024MT03526> |
+| 2 | < Vaishnavi R > | < 2024MT03527 > |
+
+
+---
+
+## Project Overview
+
+This project implements a subset of a Food Delivery platform (similar to Swiggy/Zomato) using a microservices architecture. Two services are fully implemented:
+
+| Service | Port | Responsibility |
+|---------|------|----------------|
+| **Restaurant Service** | 5001 | Manage restaurants and menu items |
+| **Order Service** | 5000 | Place and track food orders |
+
+The Order Service calls the Restaurant Service via REST to validate menu items before accepting an order — demonstrating real inter-service communication.
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.12 |
+| Framework | Flask 3.0 |
+| ORM | Flask-SQLAlchemy |
+| Database | SQLite (per service) |
+| Communication | Synchronous REST / HTTP |
+| Containerisation | Docker + Docker Compose |
+| Orchestration | Kubernetes (Minikube) |
+| Testing | pytest |
 
 ---
 
@@ -23,164 +56,108 @@ fooddelivery/
 ├── restaurant-service/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── src/app.py
-│   └── tests/test_restaurant.py
+│   ├── src/
+│   │   └── app.py
+│   └── tests/
+│       └── test_restaurant.py
 └── order-service/
     ├── Dockerfile
     ├── requirements.txt
-    ├── src/app.py
-    └── tests/test_order.py
-```
-
----
-
-## Option 1: Run Locally with Docker Compose
-
-```bash
-# From the root fooddelivery/ directory
-docker compose up --build
-
-# Restaurant Service → http://localhost:5001
-# Order Service      → http://localhost:5000
-```
-
----
-
-## Option 2: Deploy to Minikube (Kubernetes)
-
-### Prerequisites
-- [minikube](https://minikube.sigs.k8s.io/docs/start/) installed
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) installed
-- Docker installed
-
-### Step-by-step
-
-```bash
-# 1. Start minikube
-minikube start
-
-# 2. Point Docker to minikube's daemon (so images are available inside cluster)
-eval $(minikube docker-env)          # Linux/Mac
-# minikube docker-env | Invoke-Expression    # Windows PowerShell
-
-# 3. Build images inside minikube
-docker build -t restaurant-service:latest ./restaurant-service
-docker build -t order-service:latest ./order-service
-
-# 4. Apply Kubernetes manifests
-kubectl apply -f k8s/restaurant-deployment.yaml
-kubectl apply -f k8s/order-deployment.yaml
-
-# 5. Verify pods are running
-kubectl get pods
-kubectl get services
-
-# 6. Access Order Service (NodePort 30000)
-minikube ip     # get your minikube IP, e.g. 192.168.49.2
-# Then call: http://192.168.49.2:30000/health
-# OR use:
-minikube service order-service --url
-```
-
-### Kubernetes Dashboard
-
-```bash
-# Enable dashboard addon
-minikube addons enable dashboard
-minikube addons enable metrics-server
-
-# Apply admin service account
-kubectl apply -f k8s/dashboard-admin.yaml
-
-# Generate login token
-kubectl -n kubernetes-dashboard create token admin-user
-
-# Open dashboard in browser
-minikube dashboard
+    ├── src/
+    │   └── app.py
+    └── tests/
+        └── test_order.py
 ```
 
 ---
 
 ## API Reference
 
-### Restaurant Service (port 5001)
+### Restaurant Service — `http://localhost:5001`
 
-| Method | Endpoint                          | Description               |
-|--------|-----------------------------------|---------------------------|
-| GET    | /health                           | Health check              |
-| GET    | /restaurants                      | List all restaurants      |
-| GET    | /restaurants?cuisine=Indian       | Filter by cuisine         |
-| POST   | /restaurants                      | Create restaurant         |
-| GET    | /restaurants/{id}                 | Get restaurant by ID      |
-| PUT    | /restaurants/{id}                 | Update restaurant         |
-| DELETE | /restaurants/{id}                 | Delete restaurant         |
-| GET    | /restaurants/{id}/menu            | Get menu for restaurant   |
-| POST   | /restaurants/{id}/menu            | Add menu item             |
-| GET    | /menu/{item_id}                   | Get menu item (internal)  |
-| GET    | /menu/{item_id}/availability      | Check item availability   |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/restaurants` | List all restaurants |
+| POST | `/restaurants` | Create a restaurant |
+| GET | `/restaurants/{id}` | Get restaurant by ID |
+| PUT | `/restaurants/{id}` | Update restaurant |
+| DELETE | `/restaurants/{id}` | Delete restaurant |
+| GET | `/restaurants/{id}/menu` | Get menu items |
+| POST | `/restaurants/{id}/menu` | Add a menu item |
+| GET | `/menu/{item_id}/availability` | Check item availability |
 
-### Order Service (port 5000)
+### Order Service — `http://localhost:5002`
 
-| Method | Endpoint                  | Description              |
-|--------|---------------------------|--------------------------|
-| GET    | /health                   | Health check             |
-| POST   | /orders                   | Place a new order        |
-| GET    | /orders                   | List all orders          |
-| GET    | /orders?customer_name=X   | Filter orders by customer|
-| GET    | /orders/{id}              | Get order by ID          |
-| PATCH  | /orders/{id}/status       | Update order status      |
-| DELETE | /orders/{id}              | Cancel an order          |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| POST | `/orders` | Place a new order |
+| GET | `/orders` | List all orders |
+| GET | `/orders/{id}` | Get order by ID |
+| PATCH | `/orders/{id}/status` | Update order status |
+| DELETE | `/orders/{id}` | Cancel an order |
 
 ### Order Status Flow
+
 ```
 PLACED → PREPARING → OUT_FOR_DELIVERY → DELIVERED
-   ↓          ↓
+  ↓           ↓
 CANCELLED  CANCELLED
 ```
 
 ---
 
-## Sample Postman Requests
+## Running the Project
 
-### Create a Restaurant
-```json
-POST http://localhost:5001/restaurants
-{
-  "name": "Biryani House",
-  "cuisine": "Indian",
-  "address": "45 Brigade Road, Bangalore",
-  "rating": 4.2
-}
+### Option 1 — Docker Compose (Recommended)
+
+```bash
+# From the fooddelivery/ root directory
+docker compose up --build
+
+# Restaurant Service → http://localhost:5001
+# Order Service      → http://localhost:5002
 ```
 
-### Add Menu Item
-```json
-POST http://localhost:5001/restaurants/1/menu
-{
-  "name": "Chicken Biryani",
-  "price": 249.0
-}
+### Option 2 — Run Locally (No Docker)
+
+```bash
+# Terminal 1 — Restaurant Service
+cd restaurant-service
+pip install -r requirements.txt
+python src/app.py
+
+# Terminal 2 — Order Service
+cd order-service
+pip install -r requirements.txt
+RESTAURANT_SERVICE_URL=http://localhost:5001 python src/app.py
 ```
 
-### Place an Order
-```json
-POST http://localhost:5000/orders
-{
-  "customer_name": "Arjun Kumar",
-  "restaurant_id": 1,
-  "delivery_address": "22 Koramangala, Bangalore",
-  "items": [
-    { "menu_item_id": 1, "quantity": 2 }
-  ]
-}
-```
+### Option 3 — Kubernetes (Minikube)
 
-### Update Order Status
-```json
-PATCH http://localhost:5000/orders/1/status
-{
-  "status": "PREPARING"
-}
+```bash
+# Start minikube
+minikube start
+
+# Point Docker to minikube daemon
+eval $(minikube docker-env)       # Mac/Linux
+minikube docker-env | Invoke-Expression   # Windows PowerShell
+
+# Build images inside minikube
+docker build -t restaurant-service:latest ./restaurant-service
+docker build -t order-service:latest ./order-service
+
+# Deploy
+kubectl apply -f k8s/restaurant-deployment.yaml
+kubectl apply -f k8s/order-deployment.yaml
+
+# Check status
+kubectl get pods
+kubectl get services
+
+# Get order service URL
+minikube service order-service --url
 ```
 
 ---
@@ -188,20 +165,95 @@ PATCH http://localhost:5000/orders/1/status
 ## Running Tests
 
 ```bash
-# Install test dependencies
-pip install pytest flask flask-sqlalchemy requests
-
-# Restaurant Service tests
+# Restaurant Service — 11 tests
 cd restaurant-service
+pip install pytest flask flask-sqlalchemy
 pytest tests/ -v
 
-# Order Service tests
+# Order Service — 13 tests
 cd order-service
+pip install pytest flask flask-sqlalchemy requests
 pytest tests/ -v
 ```
 
 ---
 
-## GitHub Repositories
-- Restaurant Service: `https://github.com/<your-org>/restaurant-service`
-- Order Service:      `https://github.com/<your-org>/order-service`
+## Sample API Calls
+
+### Create a Restaurant
+```bash
+curl -X POST http://localhost:5001/restaurants \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Biryani House", "cuisine": "Indian", "address": "45 Brigade Road, Bangalore", "rating": 4.2}'
+```
+
+### Add a Menu Item
+```bash
+curl -X POST http://localhost:5001/restaurants/1/menu \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Chicken Biryani", "price": 249.0}'
+```
+
+### Place an Order
+```bash
+curl -X POST http://localhost:5002/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customer_name": "Arjun Kumar",
+    "restaurant_id": 1,
+    "delivery_address": "22 Koramangala, Bangalore",
+    "items": [{"menu_item_id": 1, "quantity": 2}]
+  }'
+```
+
+### Update Order Status
+```bash
+curl -X PATCH http://localhost:5002/orders/1/status \
+  -H "Content-Type: application/json" \
+  -d '{"status": "PREPARING"}'
+```
+
+---
+
+## Kubernetes Dashboard
+
+```bash
+minikube addons enable dashboard
+minikube addons enable metrics-server
+kubectl apply -f k8s/dashboard-admin.yaml
+kubectl -n kubernetes-dashboard create token admin-user
+minikube dashboard
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                   Client / Postman               │
+└──────────┬──────────────────────┬────────────────┘
+           │                      │
+           ▼                      ▼
+  ┌─────────────────┐    ┌─────────────────┐
+  │ Restaurant Svc  │◄───│   Order Svc     │
+  │   Port: 5001    │    │   Port: 5000    │
+  │  (ClusterIP)    │    │  (NodePort)     │
+  └────────┬────────┘    └────────┬────────┘
+           │                      │
+           ▼                      ▼
+    restaurants.db           orders.db
+      (SQLite)                (SQLite)
+```
+
+The Order Service calls `GET /menu/{item_id}` on the Restaurant Service to validate each item before accepting an order. The `RESTAURANT_SERVICE_URL` is injected via environment variable so the same code works locally, in Docker Compose, and in Kubernetes without changes.
+
+---
+
+## References
+
+- Flask Documentation — https://flask.palletsprojects.com/
+- Kubernetes Documentation — https://kubernetes.io/docs/
+- Minikube — https://minikube.sigs.k8s.io/docs/
+- Docker Documentation — https://docs.docker.com/
+- Richardson, C. — Microservices Patterns (Manning, 2018)
