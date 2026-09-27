@@ -6,12 +6,8 @@ A microservices-based Food Delivery application built with Python (Flask) and de
 
 ---
 
-## Group Details
 
-| # | Name | BITS ID |
-|---|------|---------|
-| 1 | Khushi Gandhi | < 2024MT03526> |
-| 2 | Vaishnavi R  | < 2024MT03527 > |
+
 
 
 ---
