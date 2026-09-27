@@ -1,3 +1,120 @@
+# Restaurant Service: database, migration job, application, service.
+#
+# The old manifest ran `replicas: 2` against `sqlite:///restaurants.db`, which
+# means each pod had its own private database file on its own container
+# filesystem and the two replicas served different data. Both replicas now talk
+# to one PostgreSQL database, so scaling out is finally meaningful.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: restaurant-db-credentials
+type: Opaque
+stringData:
+  POSTGRES_USER: restaurant
+  POSTGRES_PASSWORD: restaurant
+  POSTGRES_DB: restaurants
+  # Demo credentials. In a real cluster this Secret comes from a secret manager
+  # and is not committed.
+  DATABASE_URL: postgresql+psycopg://restaurant:restaurant@restaurant-db:5432/restaurants
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restaurant-db-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restaurant-db
+  labels:
+    app: restaurant-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restaurant-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: restaurant-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: restaurant-db-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "restaurant", "-d", "restaurants"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "restaurant", "-d", "restaurants"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: restaurant-db-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: restaurant-db
+spec:
+  selector:
+    app: restaurant-db
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
+---
+# Migrations run once, in a Job, not in every application pod. Two replicas both
+# running `db upgrade` at boot would race on the same Alembic version row.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restaurant-migrate
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: restaurant-service:latest
+          imagePullPolicy: Never
+          command: ["flask", "--app", "src/app.py", "db", "upgrade"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: restaurant-db-credentials
+                  key: DATABASE_URL
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +131,40 @@ spec:
       labels:
         app: restaurant-service
     spec:
+      initContainers:
+        # Hold the pod until the schema exists, so a fresh cluster cannot serve
+        # requests against an un-migrated database.
+        - name: wait-for-schema
+          image: restaurant-service:latest
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import os, time
+              import psycopg
+              url = os.environ['DATABASE_URL'].replace('postgresql+psycopg://', 'postgresql://')
+              for attempt in range(60):
+                  try:
+                      with psycopg.connect(url, connect_timeout=3) as conn:
+                          row = conn.execute(
+                              "select 1 from information_schema.tables "
+                              "where table_name = 'alembic_version'"
+                          ).fetchone()
+                          if row is not None:
+                              print('schema is ready')
+                              raise SystemExit(0)
+                          print('waiting for migrations')
+                  except psycopg.OperationalError as exc:
+                      print('waiting for database: %s' % exc)
+                  time.sleep(5)
+              raise SystemExit('database schema did not become ready')
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: restaurant-db-credentials
+                  key: DATABASE_URL
       containers:
         - name: restaurant-service
           image: restaurant-service:latest
@@ -22,7 +173,10 @@ spec:
             - containerPort: 5001
           env:
             - name: DATABASE_URL
-              value: sqlite:///restaurants.db
+              valueFrom:
+                secretKeyRef:
+                  name: restaurant-db-credentials
+                  key: DATABASE_URL
           readinessProbe:
             httpGet:
               path: /health

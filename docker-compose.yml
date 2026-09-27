@@ -1,5 +1,68 @@
+# Each service owns its own PostgreSQL database. The services never read each
+# other's tables; the Order Service still asks the Restaurant Service over HTTP.
+#
+# Startup order is gated on healthchecks: a database must be healthy before its
+# migration job runs, and the migration job must finish before the application
+# starts. That is why the application containers no longer create tables
+# themselves.
 
 services:
+
+  restaurant-db:
+    image: postgres:16-alpine
+    container_name: restaurant-db
+    environment:
+      - POSTGRES_USER=restaurant
+      - POSTGRES_PASSWORD=restaurant
+      - POSTGRES_DB=restaurants
+    volumes:
+      - restaurant-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U restaurant -d restaurants"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  order-db:
+    image: postgres:16-alpine
+    container_name: order-db
+    environment:
+      - POSTGRES_USER=orders
+      - POSTGRES_PASSWORD=orders
+      - POSTGRES_DB=orders
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot migration containers. They run to completion and exit, so the
+  # schema is applied exactly once instead of by every replica on boot.
+  restaurant-migrate:
+    build: ./restaurant-service
+    container_name: restaurant-migrate
+    command: ["flask", "--app", "src/app.py", "db", "upgrade"]
+    environment:
+      - DATABASE_URL=postgresql+psycopg://restaurant:restaurant@restaurant-db:5432/restaurants
+    depends_on:
+      restaurant-db:
+        condition: service_healthy
+    restart: "no"
+
+  order-migrate:
+    build: ./order-service
+    container_name: order-migrate
+    command: ["flask", "--app", "src/app.py", "db", "upgrade"]
+    environment:
+      - DATABASE_URL=postgresql+psycopg://orders:orders@order-db:5432/orders
+    depends_on:
+      order-db:
+        condition: service_healthy
+    restart: "no"
 
   restaurant-service:
     build: ./restaurant-service
@@ -7,7 +70,12 @@ services:
     ports:
       - "5001:5001"
     environment:
-      - DATABASE_URL=sqlite:///restaurants.db
+      - DATABASE_URL=postgresql+psycopg://restaurant:restaurant@restaurant-db:5432/restaurants
+    depends_on:
+      restaurant-db:
+        condition: service_healthy
+      restaurant-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
       interval: 15s
@@ -21,8 +89,22 @@ services:
     ports:
       - "5002:5000"
     environment:
-      - DATABASE_URL=sqlite:///orders.db
+      - DATABASE_URL=postgresql+psycopg://orders:orders@order-db:5432/orders
       - RESTAURANT_SERVICE_URL=http://restaurant-service:5001
     depends_on:
+      order-db:
+        condition: service_healthy
+      order-migrate:
+        condition: service_completed_successfully
       restaurant-service:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  restaurant-db-data:
+  order-db-data:

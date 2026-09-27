@@ -1,3 +1,118 @@
+# Order Service: database, migration job, application, service.
+#
+# Same fix as the Restaurant Service: both replicas share one PostgreSQL
+# database instead of each pod carrying a private SQLite file. The two services
+# still get separate databases, so neither can read the other's tables.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: order-db-credentials
+type: Opaque
+stringData:
+  POSTGRES_USER: orders
+  POSTGRES_PASSWORD: orders
+  POSTGRES_DB: orders
+  # Demo credentials. In a real cluster this Secret comes from a secret manager
+  # and is not committed.
+  DATABASE_URL: postgresql+psycopg://orders:orders@order-db:5432/orders
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: order-db-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-db
+  labels:
+    app: order-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: order-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: order-db-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "orders", "-d", "orders"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "orders", "-d", "orders"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: order-db-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-db
+spec:
+  selector:
+    app: order-db
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
+---
+# Migrations run once, in a Job, not in every application pod.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: order-migrate
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: order-service:latest
+          imagePullPolicy: Never
+          command: ["flask", "--app", "src/app.py", "db", "upgrade"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: order-db-credentials
+                  key: DATABASE_URL
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +129,40 @@ spec:
       labels:
         app: order-service
     spec:
+      initContainers:
+        # Hold the pod until the schema exists, so a fresh cluster cannot serve
+        # requests against an un-migrated database.
+        - name: wait-for-schema
+          image: order-service:latest
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import os, time
+              import psycopg
+              url = os.environ['DATABASE_URL'].replace('postgresql+psycopg://', 'postgresql://')
+              for attempt in range(60):
+                  try:
+                      with psycopg.connect(url, connect_timeout=3) as conn:
+                          row = conn.execute(
+                              "select 1 from information_schema.tables "
+                              "where table_name = 'alembic_version'"
+                          ).fetchone()
+                          if row is not None:
+                              print('schema is ready')
+                              raise SystemExit(0)
+                          print('waiting for migrations')
+                  except psycopg.OperationalError as exc:
+                      print('waiting for database: %s' % exc)
+                  time.sleep(5)
+              raise SystemExit('database schema did not become ready')
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: order-db-credentials
+                  key: DATABASE_URL
       containers:
         - name: order-service
           image: order-service:latest
@@ -22,7 +171,10 @@ spec:
             - containerPort: 5000
           env:
             - name: DATABASE_URL
-              value: sqlite:///orders.db
+              valueFrom:
+                secretKeyRef:
+                  name: order-db-credentials
+                  key: DATABASE_URL
             - name: RESTAURANT_SERVICE_URL
               value: http://restaurant-service:5001
           readinessProbe:
